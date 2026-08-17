@@ -1,7 +1,10 @@
 import unittest
 
+from supervisor.process import ProcessStates
 from supervisor.tests.base import DummySupervisor
 from supervisor.tests.base import DummyRequest
+from supervisor.tests.base import DummyPConfig
+from supervisor.tests.base import PopulatedDummySupervisor
 
 class DeferredWebProducerTests(unittest.TestCase):
     def _getTargetClass(self):
@@ -134,6 +137,16 @@ class UIHandlerTests(unittest.TestCase):
         self.assertEqual(view.__class__, OKView)
         self.assertEqual(view.context.template, None)
 
+    def test_continue_request_preserves_selected_processes(self):
+        request = DummyRequest('/index.html', [], '', '',
+                               {'PATH_INFO':'/index.html'})
+        handler = self._makeOne()
+        handler.continue_request(
+            'process=foo%3Abar&process=baz&action=startselected', request)
+        view = request.channel.producer.callback
+        self.assertEqual(view.context.form['action'], 'startselected')
+        self.assertEqual(view.context.form['process'], ['foo:bar', 'baz'])
+
 
 class StatusViewTests(unittest.TestCase):
     def _getTargetClass(self):
@@ -143,6 +156,16 @@ class StatusViewTests(unittest.TestCase):
     def _makeOne(self, context):
         klass = self._getTargetClass()
         return klass(context)
+
+    def _makePopulatedSupervisor(self):
+        options = DummySupervisor().options
+        pconfig1 = DummyPConfig(options, 'device1', '/bin/device1')
+        pconfig2 = DummyPConfig(options, 'device2', '/bin/device2')
+        supervisord = PopulatedDummySupervisor(options, 'devices',
+                                               pconfig1, pconfig2)
+        for process in supervisord.process_groups['devices'].processes.values():
+            process.group = supervisord.process_groups['devices']
+        return supervisord
 
     def test_make_callback_noaction(self):
         context = DummyContext()
@@ -173,6 +196,53 @@ class StatusViewTests(unittest.TestCase):
         data = view.render()
         from supervisor.http import NOT_DONE_YET
         self.assertTrue(data is NOT_DONE_YET, data)
+
+    def test_make_callback_startselected_without_selection(self):
+        context = DummyContext()
+        context.supervisord = DummySupervisor()
+        context.template = 'ui/status.html'
+        context.form = {}
+        view = self._makeOne(context)
+        callback = view.make_callback(None, 'startselected')
+        self.assertEqual(callback(), 'No processes selected for start')
+
+    def test_make_callback_startselected_mixed_results(self):
+        context = DummyContext()
+        context.supervisord = self._makePopulatedSupervisor()
+        context.template = 'ui/status.html'
+        context.form = {'process': ['devices:device1', 'devices:device2']}
+        view = self._makeOne(context)
+        context.supervisord.set_procattr('device1', 'state', ProcessStates.STOPPED)
+        context.supervisord.set_procattr('device2', 'state', ProcessStates.RUNNING)
+        callback = view.make_callback(None, 'startselected')
+        self.assertEqual(
+            callback(),
+            'Started 1 of 2 selected processes; failures: '
+            'devices:device2 (already started)')
+
+    def test_render_startselected_redirects_with_message(self):
+        context = DummyContext()
+        context.supervisord = self._makePopulatedSupervisor()
+        context.template = 'ui/status.html'
+        context.request = DummyRequest('/foo', [], '', '')
+        context.response = {'headers': {}}
+        context.form = {
+            'action': 'startselected',
+            'process': ['devices:device1'],
+            'SERVER_URL': 'http://example.com',
+            }
+        context.supervisord.set_procattr('device1', 'state', ProcessStates.STOPPED)
+        view = self._makeOne(context)
+
+        from supervisor.http import NOT_DONE_YET
+        data = view.render()
+        self.assertTrue(data is NOT_DONE_YET, data)
+
+        data = view.render()
+        self.assertTrue(data.startswith('<!DOCTYPE html PUBLIC'), data)
+        self.assertEqual(
+            context.response['headers']['Location'],
+            'http://example.com/?message=Started%201%20selected%20process')
 
 class DummyContext:
     pass

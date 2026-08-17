@@ -22,11 +22,15 @@
         <li class="action-button"><a href="index.html?action=refresh">Refresh</a></li>
         <li class="action-button"><a href="index.html?action=restartall">Restart All</a></li>
         <li class="action-button"><a href="index.html?action=stopall">Stop All</a></li>
+        <li class="action-button"><button type="submit" name="action" value="startselected">Start Selected</button></li>
+        <li class="action-button"><button type="submit" name="action" value="stopselected">Stop Selected</button></li>
+        <li class="action-button"><button type="submit" name="action" value="restartselected">Restart Selected</button></li>
       </ul>
 
       <table cellspacing="0" meld:id="statustable">
         <thead>
         <tr>
+          <th class="select"></th>
           <th class="state">State</th>
           <th class="desc">Description</th>
           <th class="name">Name</th>
@@ -36,6 +40,7 @@
 
         <tbody meld:id="tbody">
           <tr meld:id="tr" class="">
+            <td meld:id="select_td" class="select"><input meld:id="select_input" type="checkbox" name="process" value="" /></td>
             <td meld:id="status_td" class="status"><span meld:id="status_text" class="statusnominal">nominal</span></td>
             <td meld:id="info_td"><span meld:id="info_text">Info</span></td>
             <td meld:id="name_td"><a href="#" meld:id="name_anchor" target="_blank">Name</a></td>

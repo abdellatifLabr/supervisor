@@ -29,6 +29,7 @@ from supervisor.xmlrpc import SystemNamespaceRPCInterface
 from supervisor.xmlrpc import RootRPCInterface
 from supervisor.xmlrpc import Faults
 from supervisor.xmlrpc import RPCError
+from supervisor.xmlrpc import getFaultDescription
 
 from supervisor.rpcinterface import SupervisorNamespaceRPCInterface
 
@@ -155,6 +156,31 @@ class ViewContext:
     def __init__(self, **kw):
         self.__dict__.update(kw)
 
+def getformvalue(form, key, default=None):
+    value = form.get(key, default)
+    if isinstance(value, list):
+        if value:
+            return value[0]
+        return default
+    return value
+
+def getformlist(form, key):
+    value = form.get(key)
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+def addformvalue(form, key, value):
+    current = form.get(key)
+    if current is None:
+        form[key] = value
+    elif isinstance(current, list):
+        current.append(value)
+    else:
+        form[key] = [current, value]
+
 class MeldView:
 
     content_type = 'text/html;charset=utf-8'
@@ -198,9 +224,9 @@ class TailView(MeldView):
             tail = 'No process name found'
             processname = None
         else:
-            processname = form['processname']
+            processname = getformvalue(form, 'processname')
             offset = 0
-            limit = form.get('limit', '1024')
+            limit = getformvalue(form, 'limit', '1024')
             limit = min(-1024, int(limit)*-1 if limit.isdigit() else -1024)
             if not processname:
                 tail = 'No process name found'
@@ -236,6 +262,144 @@ class TailView(MeldView):
         return as_string(root.write_xhtmlstring())
 
 class StatusView(MeldView):
+    def _selected_processes(self):
+        selected = []
+        for namespec in getformlist(self.context.form, 'process'):
+            if namespec and namespec not in selected:
+                selected.append(namespec)
+        return selected
+
+    def _selected_action_label(self, action):
+        return {
+            'startselected': 'Started',
+            'stopselected': 'Stopped',
+            'restartselected': 'Restarted',
+        }[action]
+
+    def _selected_action_verb(self, action):
+        return {
+            'startselected': 'start',
+            'stopselected': 'stop',
+            'restartselected': 'restart',
+        }[action]
+
+    def _fault_text(self, code):
+        if code == Faults.NO_FILE:
+            return 'no such file'
+        elif code == Faults.NOT_EXECUTABLE:
+            return 'file not executable'
+        elif code == Faults.ALREADY_STARTED:
+            return 'already started'
+        elif code == Faults.SPAWN_ERROR:
+            return 'spawn error'
+        elif code == Faults.ABNORMAL_TERMINATION:
+            return 'abnormal termination'
+        elif code == Faults.NOT_RUNNING:
+            return 'not running'
+        elif code == Faults.BAD_NAME:
+            return 'bad name'
+        elif code == Faults.FAILED:
+            return 'failed'
+
+        description = getFaultDescription(code)
+        if description is None:
+            return 'unexpected rpc fault [%d]' % code
+        return description.lower().replace('_', ' ')
+
+    def _format_selected_message(self, action, selected, results):
+        successes = []
+        failures = []
+
+        if action == 'restartselected':
+            index = 0
+            for namespec in selected:
+                stop_result = results[index]
+                start_result = results[index + 1]
+                index = index + 2
+
+                if isinstance(stop_result, dict) and 'faultCode' in stop_result:
+                    failures.append(
+                        '%s (stop: %s)' % (
+                            namespec, self._fault_text(stop_result['faultCode']))
+                        )
+                elif isinstance(start_result, dict) and 'faultCode' in start_result:
+                    failures.append(
+                        '%s (start: %s)' % (
+                            namespec, self._fault_text(start_result['faultCode']))
+                        )
+                else:
+                    successes.append(namespec)
+        else:
+            for namespec, result in zip(selected, results):
+                if isinstance(result, dict) and 'faultCode' in result:
+                    failures.append(
+                        '%s (%s)' % (namespec, self._fault_text(result['faultCode']))
+                        )
+                else:
+                    successes.append(namespec)
+
+        count = len(selected)
+        label = self._selected_action_label(action)
+        noun = 'process' if count == 1 else 'processes'
+
+        if not failures:
+            return '%s %d selected %s' % (label, count, noun)
+
+        return '%s %d of %d selected processes; failures: %s' % (
+            label,
+            len(successes),
+            count,
+            ', '.join(failures),
+            )
+
+    def _make_selected_callback(self, rpcinterface, action):
+        selected = self._selected_processes()
+        verb = self._selected_action_verb(action)
+
+        if not selected:
+            def nothingselected():
+                return 'No processes selected for %s' % verb
+            nothingselected.delay = 0.05
+            return nothingselected
+
+        calls = []
+        for namespec in selected:
+            if action == 'startselected':
+                calls.append(
+                    {'methodName': 'supervisor.startProcess',
+                     'params': [namespec]}
+                    )
+            elif action == 'stopselected':
+                calls.append(
+                    {'methodName': 'supervisor.stopProcess',
+                     'params': [namespec]}
+                    )
+            elif action == 'restartselected':
+                calls.append(
+                    {'methodName': 'supervisor.stopProcess',
+                     'params': [namespec]}
+                    )
+                calls.append(
+                    {'methodName': 'supervisor.startProcess',
+                     'params': [namespec]}
+                    )
+
+        results_or_callback = rpcinterface.system.multicall(calls)
+
+        def finish_selected(callback=results_or_callback):
+            if callable(callback):
+                results = callback()
+            else:
+                results = callback
+
+            if results is NOT_DONE_YET:
+                return NOT_DONE_YET
+
+            return self._format_selected_message(action, selected, results)
+
+        finish_selected.delay = 0.05
+        return finish_selected
+
     def actions_for_process(self, process):
         state = process.get_state()
         processname = urllib.quote(make_namespec(process.group.config.name,
@@ -298,6 +462,9 @@ class StatusView(MeldView):
         rpcinterface = RootRPCInterface([main, system])
 
         if action:
+
+            if action in ('startselected', 'stopselected', 'restartselected'):
+                return self._make_selected_callback(rpcinterface, action)
 
             if action == 'refresh':
                 def donothing():
@@ -463,9 +630,9 @@ class StatusView(MeldView):
     def render(self):
         form = self.context.form
         response = self.context.response
-        processname = form.get('processname')
-        action = form.get('action')
-        message = form.get('message')
+        processname = getformvalue(form, 'processname')
+        action = getformvalue(form, 'action')
+        message = getformvalue(form, 'message')
 
         if action:
             if not self.callback:
@@ -502,13 +669,14 @@ class StatusView(MeldView):
             sent_name = make_namespec(groupname, processname)
             info = rpcinterface.supervisor.getProcessInfo(sent_name)
             data.append({
-                'status':info['statename'],
-                'name':processname,
-                'group':groupname,
-                'actions':actions,
-                'state':info['state'],
-                'description':info['description'],
-                })
+                 'status':info['statename'],
+                 'name':processname,
+                 'group':groupname,
+                 'namespec':sent_name,
+                 'actions':actions,
+                 'state':info['state'],
+                 'description':info['description'],
+                 })
 
         root = self.clone()
 
@@ -535,6 +703,9 @@ class StatusView(MeldView):
                 anchor.attributes(href='tail.html?processname=%s' %
                                   urllib.quote(processname))
                 anchor.content(processname)
+
+                select_input = tr_element.findmeld('select_input')
+                select_input.attributes(value=item['namespec'])
 
                 actions = item['actions']
                 actionitem_td = tr_element.findmeld('actionitem_td')
@@ -625,15 +796,13 @@ class supervisor_ui_handler:
 
         # we only handle x-www-form-urlencoded values from POSTs
         form_urlencoded = urlparse.parse_qsl(data)
-        query_data = urlparse.parse_qs(query)
+        query_data = urlparse.parse_qsl(query)
 
-        for k, v in query_data.items():
-            # ignore dupes
-            form[k] = v[0]
+        for k, v in query_data:
+            addformvalue(form, k, v)
 
         for k, v in form_urlencoded:
-            # ignore dupes
-            form[k] = v
+            addformvalue(form, k, v)
 
         form['SERVER_URL'] = request.get_server_url()
 
@@ -661,4 +830,3 @@ class supervisor_ui_handler:
         view = viewclass(context)
         pushproducer = request.channel.push_with_producer
         pushproducer(DeferredWebProducer(request, view))
-
