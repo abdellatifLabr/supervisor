@@ -112,6 +112,12 @@ html, body {
   display: block;
   margin: 0 7px 0 0;
 }
+#selected-count {
+  padding: 2px 0 0 8px;
+  color: #50504d;
+  font-size: 12px;
+  line-height: 1.5em;
+}
 #buttons a {
   float: left;
   display: block;

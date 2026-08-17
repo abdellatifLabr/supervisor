@@ -185,6 +185,8 @@ class StatusViewTests(unittest.TestCase):
         view = self._makeOne(context)
         data = view.render()
         self.assertTrue(data.startswith('<!DOCTYPE html PUBLIC'), data)
+        self.assertIn('id="selected-count">0 selected<', data)
+        self.assertIn("document.getElementById('selected-count')", data)
 
     def test_render_refresh(self):
         context = DummyContext()
